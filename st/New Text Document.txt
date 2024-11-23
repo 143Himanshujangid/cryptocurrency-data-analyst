@@ -1,0 +1,329 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+import hashlib
+from PIL import Image
+import numpy as np
+from plotly.subplots import make_subplots
+
+# Authentication Class Definition
+class Authentication:
+    def __init__(self):
+        if 'users' not in st.session_state:
+            # Initialize with a default admin user
+            st.session_state.users = {
+                'admin': hashlib.sha256('admin123'.encode()).hexdigest()
+            }
+
+    def verify_password(self, username, password):
+        if username in st.session_state.users:
+            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            return hashed_password == st.session_state.users[username]
+        return False
+
+    def login_page(self):
+        st.title("🔐 Login")
+        
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit_button = st.form_submit_button("Login")
+
+        if submit_button:
+            if self.verify_password(username, password):
+                st.session_state['authenticated'] = True
+                st.session_state['username'] = username
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+
+# Utility Functions
+def calculate_rsi(prices, period=14):
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+@st.cache_data
+def load_data():
+    # Replace this with your actual data loading logic
+    try:
+        df = pd.read_csv('cleaned_sorted_output_cleaned.csv')
+    except FileNotFoundError:
+        # Create sample data if file doesn't exist
+        df = pd.DataFrame({
+            'name': ['Bitcoin', 'Ethereum'],
+            'price_usd': [50000, 3000],
+            'price_btc': [1, 0.06],
+            '24h_volume_usd': [30000000000, 15000000000],
+            'market_cap_usd': [1000000000000, 350000000000],
+            'percent_change_24h': [2.5, 1.8]
+        })
+    df['volume_to_market_cap'] = df['24h_volume_usd'] / df['market_cap_usd']
+    df['price_to_btc_ratio'] = df['price_usd'] / df['price_btc']
+    return df
+
+# Visualization Functions
+def create_candlestick_chart(df, selected_crypto, timeframe='1D'):
+    filtered_df = df[df['name'] == selected_crypto].copy()
+    fig = go.Figure(data=[go.Candlestick(
+        x=filtered_df.index,
+        open=filtered_df['price_usd'],
+        high=filtered_df['price_usd'] * (1 + filtered_df['percent_change_24h']/100),
+        low=filtered_df['price_usd'] * (1 - filtered_df['percent_change_24h']/100),
+        close=filtered_df['price_usd'] * (1 + filtered_df['percent_change_24h']/100)
+    )])
+    fig.update_layout(title=f'{selected_crypto} Price Movement ({timeframe})',
+                     yaxis_title='Price',
+                     template='plotly_dark')
+    return fig
+
+def create_volume_profile(df, selected_crypto):
+    filtered_df = df[df['name'] == selected_crypto].copy()
+    fig = go.Figure(data=[go.Bar(
+        x=filtered_df.index,
+        y=filtered_df['24h_volume_usd'],
+        name='Volume Profile'
+    )])
+    fig.update_layout(title='Volume Profile',
+                     yaxis_title='Volume',
+                     template='plotly_dark')
+    return fig
+
+def create_market_dominance_pie(df):
+    top_10 = df.head(10)
+    fig = go.Figure(data=[go.Pie(
+        labels=top_10['name'],
+        values=top_10['market_cap_usd'],
+        hole=0.3
+    )])
+    fig.update_layout(title='Market Dominance (Top 10)',
+                     template='plotly_dark')
+    return fig
+
+def create_price_comparison(df, selected_cryptos):
+    fig = go.Figure()
+    for crypto in selected_cryptos:
+        crypto_data = df[df['name'] == crypto]
+        fig.add_trace(go.Scatter(
+            x=crypto_data.index,
+            y=crypto_data['price_usd'],
+            name=crypto
+        ))
+    fig.update_layout(title='Price Comparison',
+                     yaxis_title='Price (USD)',
+                     template='plotly_dark')
+    return fig
+
+def create_technical_indicators(df, selected_crypto):
+    filtered_df = df[df['name'] == selected_crypto].copy()
+    
+    filtered_df['SMA_20'] = filtered_df['price_usd'].rolling(window=20).mean()
+    filtered_df['SMA_50'] = filtered_df['price_usd'].rolling(window=50).mean()
+    filtered_df['RSI'] = calculate_rsi(filtered_df['price_usd'])
+    
+    fig = make_subplots(rows=2, cols=1)
+    
+    fig.add_trace(go.Scatter(x=filtered_df.index, y=filtered_df['price_usd'],
+                            name='Price'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=filtered_df.index, y=filtered_df['SMA_20'],
+                            name='SMA 20'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=filtered_df.index, y=filtered_df['SMA_50'],
+                            name='SMA 50'), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(x=filtered_df.index, y=filtered_df['RSI'],
+                            name='RSI'), row=2, col=1)
+    
+    fig.update_layout(height=800, title_text=f"Technical Analysis - {selected_crypto}",
+                     template='plotly_dark')
+    return fig
+
+def create_market_metrics(df, selected_crypto):
+    filtered_df = df[df['name'] == selected_crypto].copy()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=filtered_df.index,
+        y=filtered_df['market_cap_usd'],
+        name='Market Cap'
+    ))
+    fig.update_layout(
+        title=f'{selected_crypto} Market Metrics',
+        yaxis_title='Value (USD)',
+        template='plotly_dark'
+    )
+    return fig
+
+def create_correlation_heatmap(df):
+    num_cols = ['price_usd', 'market_cap_usd', '24h_volume_usd', 'percent_change_24h']
+    correlation = df[num_cols].corr()
+    fig = go.Figure(data=go.Heatmap(
+        z=correlation,
+        x=num_cols,
+        y=num_cols,
+        colorscale='RdBu'
+    ))
+    fig.update_layout(
+        title='Correlation Heatmap',
+        template='plotly_dark'
+    )
+    return fig
+
+def create_scatter_plot(df, x_col, y_col):
+    fig = go.Figure(data=go.Scatter(
+        x=df[x_col],
+        y=df[y_col],
+        mode='markers',
+        marker=dict(
+            size=8,
+            color=df['percent_change_24h'],
+            colorscale='Viridis',
+            showscale=True
+        )
+    ))
+    fig.update_layout(
+        title=f'{x_col} vs {y_col}',
+        xaxis_title=x_col,
+        yaxis_title=y_col,
+        template='plotly_dark'
+    )
+    return fig
+
+# Main App Function
+def main():
+    st.set_page_config(page_title="Crypto Dashboard", layout="wide")
+    
+    # Authentication
+    auth = Authentication()
+    if "authenticated" not in st.session_state:
+        auth.login_page()
+        return
+    
+    # Main Dashboard
+    st.title("📊 Cryptocurrency Analytics Dashboard")
+    
+    # Sidebar Controls
+    with st.sidebar:
+        st.title(f"Welcome, {st.session_state['username']}!")
+        st.markdown("---")
+        
+        # Load data
+        df = load_data()
+        
+        # Currency Selection
+        currency_options = ['USD', 'EUR', 'GBP', 'JPY']
+        selected_currency = st.selectbox("Select Currency", currency_options)
+        
+        # Visualization Type
+        viz_type = st.selectbox("Visualization Type", 
+                              ["Static", "Dynamic"])
+        
+        # Chart Type Selection
+        chart_type = st.selectbox("Select Chart Type", 
+                                ["Price Action", "Volume Profile", 
+                                 "Market Dominance", "Technical Analysis",
+                                 "Multi-Crypto Comparison"])
+        
+        # Cryptocurrency Selection
+        if chart_type != "Market Dominance":
+            if chart_type == "Multi-Crypto Comparison":
+                selected_cryptos = st.multiselect(
+                    "Select Cryptocurrencies",
+                    options=df['name'].unique(),
+                    default=df['name'].unique()[:3]
+                )
+            else:
+                selected_crypto = st.selectbox(
+                    "Select Cryptocurrency",
+                    options=df['name'].unique()
+                )
+        
+        # Additional Controls
+        if chart_type == "Price Action":
+            timeframe = st.selectbox("Select Timeframe",
+                                   ["1D", "1W", "1M", "3M", "1Y"])
+        
+        st.markdown("---")
+        if st.button("Logout"):
+            st.session_state.clear()
+            st.rerun()
+    
+    # Main content area
+    st.markdown("### Market Analysis")
+    
+    if viz_type == "Dynamic":
+        st.warning("Dynamic charts update in real-time (simulated for demo)")
+        
+    # Display selected chart
+    if chart_type == "Price Action":
+        st.plotly_chart(
+            create_candlestick_chart(df, selected_crypto, timeframe),
+            use_container_width=True
+        )
+        
+    elif chart_type == "Volume Profile":
+        st.plotly_chart(
+            create_volume_profile(df, selected_crypto),
+            use_container_width=True
+        )
+        
+    elif chart_type == "Market Dominance":
+        st.plotly_chart(
+            create_market_dominance_pie(df),
+            use_container_width=True
+        )
+        
+    elif chart_type == "Multi-Crypto Comparison":
+        if selected_cryptos:
+            st.plotly_chart(
+                create_price_comparison(df, selected_cryptos),
+                use_container_width=True
+            )
+            
+    elif chart_type == "Technical Analysis":
+        st.plotly_chart(
+            create_technical_indicators(df, selected_crypto),
+            use_container_width=True
+        )
+    
+    # Additional Analysis Section
+    st.markdown("### Additional Analysis")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        metrics_tab, correlation_tab = st.tabs(["📊 Key Metrics", "🔄 Correlations"])
+        
+        with metrics_tab:
+            if chart_type != "Market Dominance":
+                st.plotly_chart(
+                    create_market_metrics(df, selected_crypto),
+                    use_container_width=True
+                )
+            
+        with correlation_tab:
+            st.plotly_chart(
+                create_correlation_heatmap(df),
+                use_container_width=True
+            )
+    
+    with col2:
+        volume_tab, custom_tab = st.tabs(["📈 Volume Analysis", "🎯 Custom Metrics"])
+        
+        with volume_tab:
+            if chart_type != "Market Dominance":
+                st.plotly_chart(
+                    create_volume_profile(df, selected_crypto),
+                    use_container_width=True
+                )
+            
+        with custom_tab:
+            st.plotly_chart(
+                create_scatter_plot(df, 'market_cap_usd', '24h_volume_usd'),
+                use_container_width=True
+            )
+
+if __name__ == "__main__":
+    main()
